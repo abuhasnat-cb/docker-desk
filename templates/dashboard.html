@@ -1,0 +1,86 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Docker Desk</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+  <main class="page">
+    <header class="header">
+      <h1>Docker Desk</h1>
+      <div id="connection" class="connection {{ 'connected' if connected else 'disconnected' }}">
+        <span aria-hidden="true">{{ '●' if connected else '×' }}</span>
+        <span>{{ 'connected' if connected else 'Docker unavailable' }}</span>
+      </div>
+    </header>
+
+    {% if not connected %}
+    <section class="error-panel">
+      <strong>Unable to connect to Docker Engine.</strong>
+      <p>Check that Docker is running and that the current user has permission to access <code>/var/run/docker.sock</code>.</p>
+    </section>
+    {% endif %}
+
+    <section class="summary" aria-label="Docker summary">
+      <div><strong id="container-count">{{ system.containers if system else 0 }}</strong><span>containers</span></div>
+      <div><strong id="running-count">{{ system.running if system else 0 }}</strong><span>running</span></div>
+      <div><strong id="stopped-count">{{ system.stopped if system else 0 }}</strong><span>stopped</span></div>
+      <div><strong id="image-count">{{ system.images if system else images|length }}</strong><span>images</span></div>
+    </section>
+
+    <section class="section" id="projects-section">
+      <div class="section-title">PROJECTS</div>
+      <div id="projects">
+        {% if projects %}
+          {% for project in projects %}
+          <div class="project">
+            <div class="project-heading"><strong>{{ project.name }}</strong><span>{{ project.running }} / {{ project.total }} running</span></div>
+            {% for container in project.containers %}
+            <div class="row project-row">
+              <span>{{ container.compose_service or container.name }}</span>
+              <span>{{ container.image }}</span>
+              <span class="status {{ container.status }}">{{ '●' if container.status == 'running' else '○' }} {{ container.status }}</span>
+            </div>
+            {% endfor %}
+          </div>
+          {% endfor %}
+        {% else %}
+          <div class="empty">No Compose projects detected.</div>
+        {% endif %}
+      </div>
+    </section>
+
+    <section class="section">
+      <div class="section-title">CONTAINERS</div>
+      <div class="table">
+        <div class="row table-head"><span>NAME</span><span>IMAGE</span><span>STATUS</span></div>
+        <div id="containers">
+          {% for container in containers %}
+          <div class="row"><span>{{ container.name }}</span><span>{{ container.image }}</span><span class="status {{ container.status }}">{{ '●' if container.status == 'running' else '○' }} {{ container.status }}</span></div>
+          {% else %}<div class="empty">No containers.</div>{% endfor %}
+        </div>
+      </div>
+    </section>
+
+    <section class="section">
+      <div class="section-title">IMAGES</div>
+      <div class="table">
+        <div class="row table-head"><span>IMAGE</span><span>SIZE</span><span>CONTAINERS</span></div>
+        <div id="images">
+          {% for image in images %}
+          <div class="row"><span>{{ image.tags[0] if image.tags else image.short_id }}</span><span>{{ image.size|filesizeformat }}</span><span>{{ image.container_count }}</span></div>
+          {% else %}<div class="empty">No images.</div>{% endfor %}
+        </div>
+      </div>
+    </section>
+
+    <footer>
+      <span id="engine-info">{% if system %}Docker {{ system.docker_version }} · {{ system.hostname or 'local engine' }}{% else %}Docker Engine not connected{% endif %}</span>
+      <span>read-only · refresh 5s</span>
+    </footer>
+  </main>
+  <script src="{{ url_for('static', filename='app.js') }}"></script>
+</body>
+</html>
