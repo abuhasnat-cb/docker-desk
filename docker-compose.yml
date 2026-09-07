@@ -1,0 +1,15 @@
+services:
+  docker-desk:
+    build: .
+    container_name: docker-desk
+    ports:
+      - "9876:8080" # Change only 9876 to choose another host port.
+    environment:
+      DOCKER_SOCKET: /var/run/docker.sock
+    # Host socket GID on the target Linux Docker host. Change this only if
+    # `stat -c "%g" /var/run/docker.sock` reports a different GID.
+    group_add:
+      - "${DOCKER_SOCKET_GID:-984}"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    restart: unless-stopped
