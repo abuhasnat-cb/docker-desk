@@ -73,7 +73,8 @@ class DockerDeskTests(unittest.TestCase):
         self.client = app.test_client()
 
     def test_dashboard_handles_missing_docker(self):
-        with patch("app.docker_client", side_effect=Exception("missing")):
+        from docker.errors import DockerException
+        with patch("app.docker_client", side_effect=DockerException("missing")):
             response = self.client.get("/")
         self.assertEqual(response.status_code, 200)
         self.assertIn(b"Docker unavailable", response.data)
