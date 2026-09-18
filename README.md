@@ -4,14 +4,15 @@ Docker Desk is a small, read-only Linux Docker monitoring dashboard. It puts hos
 
 ## V0.3 + V0.4
 
-- Live host RAM, disk, CPU/load, and core information
+- Host RAM, disk, CPU/load, and core information
 - Docker Engine version and container/image counts
-- Live container CPU, memory, network I/O, block I/O, and PIDs where available
+- Container CPU, memory, network I/O, block I/O, and PIDs where available
+- Manual Refresh button; the dashboard does not poll Docker in the background
+- First page load lists running/stopped state without container stats; Refresh loads resource samples
 - Explicit host → container port mappings, including TCP/UDP and IPv4/IPv6 bindings returned by Docker
 - Compose project grouping and project resource summaries
 - Container detail panel with uptime, health, ports, restart count, and resources
 - Lightweight search and sorting
-- Derived idle indicator based on sustained low CPU and network activity, never from a single sample
 - Graceful Docker/socket/stat failures
 - `/health` application health endpoint
 - Production Gunicorn server
@@ -123,16 +124,11 @@ Then open `http://127.0.0.1:8080`.
 
 The Python development server remains localhost-only. Production Docker deployment uses Gunicorn.
 
-## Idle heuristic
-
-Docker does not provide a universal semantic `idle` state. Docker Desk derives a temporary indicator only after `DOCKER_DESK_IDLE_SAMPLES` consecutive running-container samples (default 3). A container is considered idle only when every retained sample is at or below `DOCKER_DESK_IDLE_CPU_PERCENT` (default 1%) and each interval's combined network RX/TX increase is at or below `DOCKER_DESK_IDLE_NET_BYTES` (default 4096 bytes).
-
-These values can be changed through environment variables. Idle state is held only in process memory; there is no database and no persistence. `warming up` means there are not enough samples yet.
-
 ## API
 
-- `GET /` — Jinja dashboard
+- `GET /` — Jinja dashboard (no container stats)
 - `GET /health` — application health; does not require Docker
+- `GET /api/snapshot` — one-shot dashboard payload used by Refresh, including stats
 - `GET /api/system` — Docker plus host resource information
 - `GET /api/containers` — containers, resources, ports, and Compose grouping
 - `GET /api/containers/<id>` — one container's details and current stats

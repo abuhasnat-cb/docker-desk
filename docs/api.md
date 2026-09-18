@@ -4,7 +4,7 @@ All endpoints are normal Flask routes and return JSON except `/`, which renders 
 
 ## `GET /`
 
-Main dashboard.
+Main dashboard. The first render lists containers without resource stats.
 
 ## `GET /health`
 
@@ -15,6 +15,12 @@ Example:
 ```json
 {"status":"ok"}
 ```
+
+## `GET /api/snapshot`
+
+Single payload used by the Refresh button. One Docker client lists system info, containers (with one-shot stats for running containers), Compose projects, and tagged images.
+
+If Docker cannot be reached, the endpoint returns HTTP `503` with `connected: false`.
 
 ## `GET /api/system`
 
@@ -47,7 +53,7 @@ If Docker cannot be reached, the endpoint returns HTTP `503` with `connected: fa
 
 Returns all containers plus Compose project grouping. Each container includes status, uptime, health, restart count, raw Docker port bindings, normalized port mappings, and current stats where available.
 
-Resource fields include `cpu_percent`, `memory_usage`, `memory_limit`, `memory_percent`, `network_rx`, `network_tx`, `block_read`, `block_write`, `pids`, and the derived `idle` field.
+Resource fields include `cpu_percent`, `memory_usage`, `memory_limit`, `memory_percent`, `network_rx`, `network_tx`, `block_read`, `block_write`, and `pids`.
 
 Example shape:
 
@@ -63,7 +69,7 @@ Example shape:
       "port_mappings": [
         {"host_ip":"0.0.0.0","published":"8000","container":"8000/tcp"}
       ],
-      "stats": {"available":true,"cpu_percent":0.8,"memory_usage":184000000,"memory_limit":1000000000,"memory_percent":18.4,"network_rx":12000000,"network_tx":8000000,"block_read":0,"block_write":0,"pids":5,"idle":false}
+      "stats": {"available":true,"cpu_percent":0.8,"memory_usage":184000000,"memory_limit":1000000000,"memory_percent":18.4,"network_rx":12000000,"network_tx":8000000,"block_read":0,"block_write":0,"pids":5}
     }
   ],
   "projects": []
@@ -80,7 +86,7 @@ Returns the normalized current stats for one container. Stopped containers retur
 
 ## `GET /api/images`
 
-Returns image IDs, tags, creation time, size, and the number of current containers referencing each image.
+Returns image IDs, tags, creation time, relative age, size, in-use/dangling status, and the names of containers referencing each image. In-use images are listed first.
 
 ## Read-only behavior
 

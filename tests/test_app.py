@@ -37,11 +37,23 @@ class DockerDeskTests(unittest.TestCase):
             response = self.client.get("/")
         self.assertEqual(response.status_code, 200)
         self.assertIn(b"Docker unavailable", response.data)
+        self.assertIn(b'id="refresh"', response.data)
+        self.assertIn(b'id="images-toggle"', response.data)
+        html = response.get_data(as_text=True)
+        self.assertLess(html.find('id="detail-section"'), html.find('PROJECTS'))
+        self.assertNotIn("containers 4s", html)
 
     def test_health_does_not_require_docker(self):
         response = self.client.get("/health")
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json["status"], "ok")
+
+    def test_api_snapshot_returns_controlled_error(self):
+        from docker.errors import DockerException
+        with patch("app.docker_client", side_effect=DockerException("missing")):
+            response = self.client.get("/api/snapshot")
+        self.assertEqual(response.status_code, 503)
+        self.assertFalse(response.json["connected"])
 
     def test_api_system_returns_controlled_error(self):
         from docker.errors import DockerException
@@ -59,6 +71,34 @@ class DockerDeskTests(unittest.TestCase):
         self.assertEqual(projects[0]["running"], 1)
         self.assertEqual(projects[0]["total"], 2)
         self.assertEqual(containers[0]["port_mappings"][0]["published"], "8000")
+        self.assertEqual(containers[0]["ports_text"], "8000")
+
+    def test_ports_text_lists_unique_published_host_ports(self):
+        from app import _format_ports, _ports_text
+        mappings = _format_ports({
+            "8080/tcp": [
+                {"HostIp": "0.0.0.0", "HostPort": "9876"},
+                {"HostIp": "::", "HostPort": "9876"},
+            ],
+            "443/tcp": [{"HostIp": "127.0.0.1", "HostPort": "8443"}],
+            "9000/tcp": None,
+        })
+        self.assertEqual(_ports_text(mappings), "9876, 8443")
+
+    def test_image_payload_includes_age_and_users(self):
+        from datetime import datetime, timedelta, timezone
+        from app import _age_text, _image_payload
+        created = datetime.now(timezone.utc) - timedelta(days=3, hours=2)
+        image = FakeImage()
+        image.attrs["Created"] = created.isoformat()
+        payload = _image_payload(image, [{"name": "web", "status": "running"}, {"name": "worker", "status": "exited"}])
+        self.assertEqual(payload["age_text"], _age_text(created.isoformat()))
+        self.assertTrue(payload["in_use"])
+        self.assertEqual(payload["use_text"], "1 running · 1 stopped")
+        self.assertEqual(payload["used_by_text"], "web, worker")
+        unused = _image_payload(FakeImage(), [])
+        self.assertEqual(unused["use_text"], "unused")
+        self.assertEqual(unused["used_by_text"], "—")
 
     def test_cpu_calculation(self):
         stats = {"cpu_stats": {"cpu_usage": {"total_usage": 150}, "system_cpu_usage": 2000, "online_cpus": 2},
@@ -80,7 +120,7 @@ class DockerDeskTests(unittest.TestCase):
             "blkio_stats": {"io_service_bytes_recursive": [{"op": "Read", "value": 30}, {"op": "Write", "value": 40}]},
             "pids_stats": {"current": 4},
         })
-        self.assertEqual(normalized["cpu_percent"], 9.09)
+        self.assertEqual(normalized["cpu_percent"], 11.11)
         self.assertEqual(normalized["memory_usage"], 200)
         self.assertEqual(normalized["network_rx"], 10)
         self.assertEqual(normalized["block_write"], 40)

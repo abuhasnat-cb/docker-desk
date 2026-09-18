@@ -12,4 +12,7 @@ services:
       - "${DOCKER_SOCKET_GID:-984}"
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
+    mem_limit: 128m
+    cpus: "0.25"
+    pids_limit: 32
     restart: unless-stopped

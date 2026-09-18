@@ -3,8 +3,9 @@ from __future__ import annotations
 import logging
 import os
 from collections import defaultdict
+from contextlib import contextmanager
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Iterator
 
 import docker
 from docker.errors import APIError, DockerException, NotFound
@@ -17,12 +18,6 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(mess
 logger = logging.getLogger("docker-desk")
 
 DOCKER_TIMEOUT = float(os.getenv("DOCKER_TIMEOUT", "5"))
-IDLE_CPU_PERCENT = float(os.getenv("DOCKER_DESK_IDLE_CPU_PERCENT", "1.0"))
-IDLE_NET_BYTES = int(os.getenv("DOCKER_DESK_IDLE_NET_BYTES", "4096"))
-IDLE_SAMPLES = max(2, int(os.getenv("DOCKER_DESK_IDLE_SAMPLES", "3")))
-
-# Deliberately in-memory: idle is a transient UI heuristic, not persisted state.
-_idle_samples: dict[str, list[tuple[float, int, int]]] = {}
 
 
 def docker_client():
@@ -40,8 +35,59 @@ def docker_client():
     return client
 
 
+@contextmanager
+def docker_session() -> Iterator[Any]:
+    client = docker_client()
+    try:
+        yield client
+    finally:
+        client.close()
+
+
 def _iso_or_value(value: Any) -> Any:
     return value.isoformat() if hasattr(value, "isoformat") else value
+
+
+def _parse_datetime(value: Any) -> datetime | None:
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
+    if isinstance(value, (int, float)):
+        try:
+            return datetime.fromtimestamp(value, tz=timezone.utc)
+        except (OSError, OverflowError, ValueError):
+            return None
+    text = str(value).strip()
+    if not text:
+        return None
+    try:
+        return datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        try:
+            return datetime.fromtimestamp(float(text), tz=timezone.utc)
+        except (OSError, OverflowError, ValueError, TypeError):
+            return None
+
+
+def _age_text(created: Any, now: datetime | None = None) -> str:
+    parsed = _parse_datetime(created)
+    if parsed is None:
+        return "—"
+    current = now or datetime.now(timezone.utc)
+    seconds = max(0, int((current - parsed).total_seconds()))
+    if seconds < 60:
+        return f"{seconds}s"
+    if seconds < 3600:
+        return f"{seconds // 60}m"
+    if seconds < 86400:
+        return f"{seconds // 3600}h"
+    days = seconds // 86400
+    if days < 60:
+        return f"{days}d"
+    if days < 365:
+        return f"{days // 30}mo"
+    return f"{days // 365}y"
 
 
 def _short_id(identifier: str | None) -> str | None:
@@ -141,36 +187,12 @@ def normalize_stats(stats: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _update_idle(container_id: str, stats: dict[str, Any]) -> bool | None:
-    cpu = stats.get("cpu_percent")
-    rx = stats.get("network_rx")
-    tx = stats.get("network_tx")
-    if cpu is None or rx is None or tx is None:
-        _idle_samples.pop(container_id, None)
-        return None
-
-    samples = _idle_samples.setdefault(container_id, [])
-    samples.append((float(cpu), int(rx), int(tx)))
-    if len(samples) > IDLE_SAMPLES:
-        del samples[:-IDLE_SAMPLES]
-    if len(samples) < IDLE_SAMPLES:
-        return None
-
-    cpu_low = all(sample[0] <= IDLE_CPU_PERCENT for sample in samples)
-    network_low = all(
-        (samples[index][1] - samples[index - 1][1]) + (samples[index][2] - samples[index - 1][2]) <= IDLE_NET_BYTES
-        for index in range(1, len(samples))
-    )
-    return cpu_low and network_low
-
-
 def get_container_stats(container: Any) -> dict[str, Any]:
     if _container_status(container) != "running":
         return empty_stats()
     try:
-        stats = normalize_stats(container.stats(stream=False))
-        stats["idle"] = _update_idle(container.id, stats)
-        return stats
+        # one_shot uses the daemon's latest sample instead of waiting ~1s per container.
+        return normalize_stats(container.stats(stream=False, one_shot=True))
     except (APIError, DockerException) as exc:
         logger.warning("Unable to read stats for %s: %s", getattr(container, "name", container.id), exc)
         return empty_stats()
@@ -191,68 +213,123 @@ def _format_ports(ports: dict[str, Any] | None) -> list[dict[str, Any]]:
     return mappings
 
 
+def _ports_text(mappings: list[dict[str, Any]]) -> str:
+    labels: list[str] = []
+    seen: set[str] = set()
+    for mapping in mappings:
+        published = mapping.get("published")
+        if not published:
+            continue
+        port = str(published)
+        if port in seen:
+            continue
+        seen.add(port)
+        labels.append(port)
+    return ", ".join(labels) if labels else "—"
+
+
 def _container_payload(container: Any, stats: dict[str, Any] | None = None) -> dict[str, Any]:
     attrs = container.attrs or {}
     config = attrs.get("Config", {})
     state = attrs.get("State", {})
     labels = config.get("Labels") or {}
-    image = container.image
-    tags = getattr(image, "tags", []) or []
-    image_id = getattr(image, "id", None) or attrs.get("Image")
+    image_id = attrs.get("Image")
     ports = attrs.get("NetworkSettings", {}).get("Ports") or {}
+    port_mappings = _format_ports(ports)
     return {
         "id": container.id, "short_id": _short_id(container.id), "name": container.name,
-        "image": config.get("Image") or (tags[0] if tags else image_id), "image_id": image_id,
+        "image": config.get("Image") or image_id, "image_id": image_id,
         "status": _container_status(container), "state": state.get("Status"),
         "health": (state.get("Health") or {}).get("Status"), "restart_count": attrs.get("RestartCount", 0),
         "created": _iso_or_value(attrs.get("Created")), "started_at": _iso_or_value(state.get("StartedAt")),
         "uptime_seconds": _uptime_seconds(state.get("StartedAt")), "ports": ports,
-        "port_mappings": _format_ports(ports), "labels": labels,
+        "port_mappings": port_mappings, "ports_text": _ports_text(port_mappings),
         "compose_project": labels.get("com.docker.compose.project"),
         "compose_service": labels.get("com.docker.compose.service"),
         "stats": stats or empty_stats(),
     }
 
 
+def _list_containers(client: Any, include_stats: bool) -> list[dict[str, Any]]:
+    payload = []
+    for container in client.containers.list(all=True):
+        try:
+            stats = get_container_stats(container) if include_stats else empty_stats()
+            payload.append(_container_payload(container, stats))
+        except (APIError, DockerException) as exc:
+            logger.warning("Skipping container that disappeared: %s", exc)
+    return payload
+
+
+def _image_payload(image: Any, users: list[dict[str, Any]]) -> dict[str, Any]:
+    tags = [tag for tag in ((image.attrs or {}).get("RepoTags") or []) if tag and tag != "<none>:<none>"]
+    dangling = not tags
+    running = sum(1 for container in users if container.get("status") == "running")
+    stopped = max(0, len(users) - running)
+    if dangling and not users:
+        use_text = "dangling"
+    elif not users:
+        use_text = "unused"
+    else:
+        parts = []
+        if running:
+            parts.append(f"{running} running")
+        if stopped:
+            parts.append(f"{stopped} stopped")
+        use_text = " · ".join(parts)
+    names = [container.get("name") or container.get("short_id") for container in users]
+    names = [name for name in names if name]
+    if len(names) > 3:
+        used_by_text = ", ".join(names[:3]) + f" +{len(names) - 3}"
+    else:
+        used_by_text = ", ".join(names) if names else "—"
+    created = (image.attrs or {}).get("Created")
+    return {
+        "id": image.id, "short_id": _short_id(image.id), "tags": tags,
+        "created": _iso_or_value(created), "age_text": _age_text(created),
+        "size": (image.attrs or {}).get("Size", 0), "dangling": dangling, "in_use": bool(users),
+        "container_count": len(users), "use_text": use_text, "used_by_text": used_by_text,
+    }
+
+
+def _list_images(client: Any, containers: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    users_by_image: defaultdict[str, list[dict[str, Any]]] = defaultdict(list)
+    for container in containers:
+        if container.get("image_id"):
+            users_by_image[container["image_id"]].append(container)
+    images = [_image_payload(image, users_by_image.get(image.id, [])) for image in client.images.list()]
+    images.sort(key=lambda item: (not item["in_use"], item["dangling"], -(item["size"] or 0)))
+    return images
+
+
+def _system_payload(client: Any) -> dict[str, Any]:
+    info = client.info()
+    return {
+        "connected": True, "docker_version": info.get("ServerVersion"),
+        "api_version": info.get("ApiVersion"), "hostname": info.get("Name"),
+        "containers": info.get("Containers", 0), "running": info.get("ContainersRunning", 0),
+        "paused": info.get("ContainersPaused", 0), "stopped": info.get("ContainersStopped", 0),
+        "images": info.get("Images", 0), "host": host_resources(),
+    }
+
+
 def get_containers(include_stats: bool = True) -> list[dict[str, Any]]:
-    client = docker_client()
-    try:
-        payload = []
-        for container in client.containers.list(all=True):
-            try:
-                payload.append(_container_payload(container, get_container_stats(container) if include_stats else empty_stats()))
-            except (APIError, DockerException) as exc:
-                logger.warning("Skipping container that disappeared: %s", exc)
-        return payload
-    finally:
-        client.close()
+    with docker_session() as client:
+        return _list_containers(client, include_stats)
 
 
 def get_container(container_id: str, include_stats: bool = True) -> dict[str, Any]:
-    client = docker_client()
-    try:
+    with docker_session() as client:
         container = client.containers.get(container_id)
-        return _container_payload(container, get_container_stats(container) if include_stats else empty_stats())
-    finally:
-        client.close()
+        stats = get_container_stats(container) if include_stats else empty_stats()
+        return _container_payload(container, stats)
 
 
 def get_images(containers: list[dict[str, Any]] | None = None) -> list[dict[str, Any]]:
-    client = docker_client()
-    try:
-        images = client.images.list(all=True)
-        containers = containers if containers is not None else get_containers(include_stats=False)
-        references: defaultdict[str, int] = defaultdict(int)
-        for container in containers:
-            if container.get("image_id"):
-                references[container["image_id"]] += 1
-        return [{
-            "id": image.id, "short_id": _short_id(image.id), "tags": (image.attrs or {}).get("RepoTags") or [],
-            "created": _iso_or_value((image.attrs or {}).get("Created")), "size": (image.attrs or {}).get("Size", 0),
-            "container_count": references.get(image.id, 0),
-        } for image in images]
-    finally:
-        client.close()
+    with docker_session() as client:
+        if containers is None:
+            containers = _list_containers(client, include_stats=False)
+        return _list_images(client, containers)
 
 
 def _read_meminfo() -> dict[str, int]:
@@ -296,22 +373,9 @@ def host_resources() -> dict[str, Any]:
     }
 
 
-def get_system(containers: list[dict[str, Any]] | None = None) -> dict[str, Any]:
-    client = docker_client()
-    try:
-        info = client.info()
-        version = client.version()
-        containers = containers if containers is not None else get_containers(include_stats=False)
-        return {
-            "connected": True, "docker_version": version.get("Version"), "api_version": version.get("ApiVersion"),
-            "hostname": info.get("Name"), "containers": info.get("Containers", len(containers)),
-            "running": info.get("ContainersRunning", sum(c["status"] == "running" for c in containers)),
-            "paused": info.get("ContainersPaused", sum(c["status"] == "paused" for c in containers)),
-            "stopped": info.get("ContainersStopped", sum(c["status"] in {"exited", "created"} for c in containers)),
-            "images": info.get("Images", 0), "host": host_resources(),
-        }
-    finally:
-        client.close()
+def get_system() -> dict[str, Any]:
+    with docker_session() as client:
+        return _system_payload(client)
 
 
 def _project_resource_summary(containers: list[dict[str, Any]]) -> dict[str, Any]:
@@ -337,12 +401,15 @@ def compose_projects(containers: list[dict[str, Any]]) -> list[dict[str, Any]]:
     } for name, members in sorted(projects.items())]
 
 
-def dashboard_snapshot() -> dict[str, Any]:
+def dashboard_snapshot(include_stats: bool = False) -> dict[str, Any]:
     try:
-        containers = get_containers(include_stats=True)
-        system = get_system(containers)
-        return {"connected": True, "system": system, "containers": containers,
-                "images": get_images(containers), "projects": compose_projects(containers), "error": None}
+        with docker_session() as client:
+            containers = _list_containers(client, include_stats)
+            return {
+                "connected": True, "system": _system_payload(client), "containers": containers,
+                "images": _list_images(client, containers), "projects": compose_projects(containers),
+                "error": None,
+            }
     except DockerException as exc:
         logger.warning("Docker Engine unavailable: %s", exc)
         return {"connected": False, "system": None, "containers": [], "images": [], "projects": [],
@@ -351,12 +418,20 @@ def dashboard_snapshot() -> dict[str, Any]:
 
 @app.get("/")
 def dashboard():
-    return render_template("dashboard.html", **dashboard_snapshot())
+    return render_template("dashboard.html", **dashboard_snapshot(include_stats=False))
 
 
 @app.get("/health")
 def health():
     return jsonify({"status": "ok"})
+
+
+@app.get("/api/snapshot")
+def api_snapshot():
+    snapshot = dashboard_snapshot(include_stats=True)
+    if not snapshot["connected"]:
+        return jsonify(snapshot), 503
+    return jsonify(snapshot)
 
 
 @app.get("/api/system")
@@ -371,8 +446,9 @@ def api_system():
 @app.get("/api/containers")
 def api_containers():
     try:
-        containers = get_containers(include_stats=True)
-        return jsonify({"containers": containers, "projects": compose_projects(containers)})
+        with docker_session() as client:
+            containers = _list_containers(client, include_stats=True)
+            return jsonify({"containers": containers, "projects": compose_projects(containers)})
     except DockerException as exc:
         logger.warning("Docker Engine unavailable for /api/containers: %s", exc)
         return jsonify({"containers": [], "projects": [], "error": "Unable to connect to Docker Engine."}), 503
@@ -403,8 +479,7 @@ def api_container_stats(container_id: str):
 @app.get("/api/images")
 def api_images():
     try:
-        containers = get_containers(include_stats=False)
-        return jsonify({"images": get_images(containers)})
+        return jsonify({"images": get_images()})
     except DockerException as exc:
         logger.warning("Docker Engine unavailable for /api/images: %s", exc)
         return jsonify({"images": [], "error": "Unable to connect to Docker Engine."}), 503

@@ -90,19 +90,9 @@ volumes:
 
 Do not assume `:ro` makes Docker Engine API access read-only. The Docker socket remains a highly privileged host interface. Docker Desk's read-only guarantee is enforced by its application/API surface.
 
-## Refresh intervals
+## Refresh
 
-The browser refreshes container/project data every 4 seconds and system/image data every 10 seconds. These are ordinary JavaScript timers in `static/app.js`, not a background server worker.
-
-## Idle heuristic settings
-
-Defaults:
-
-- `DOCKER_DESK_IDLE_CPU_PERCENT=1.0`
-- `DOCKER_DESK_IDLE_NET_BYTES=4096`
-- `DOCKER_DESK_IDLE_SAMPLES=3`
-
-The default requires three samples, approximately 12 seconds apart in the normal dashboard polling flow, before an idle state can be shown. The state is reset when stats are unavailable or a container is no longer running.
+The first page load is a cheap inspect: names, status, health, ports, projects, and images. Docker stats are collected only when Refresh is clicked. That click calls `GET /api/snapshot` once (one Docker client, one-shot stats for running containers) and replaces system, containers, projects, images, and any open container detail. There are no JavaScript timers and no background server worker.
 
 ## Debugging
 
@@ -117,6 +107,7 @@ curl -fsS http://127.0.0.1:8080/health
 API checks:
 
 ```bash
+curl -s http://127.0.0.1:8080/api/snapshot
 curl -s http://127.0.0.1:8080/api/system
 curl -s http://127.0.0.1:8080/api/containers
 curl -s http://127.0.0.1:8080/api/images

@@ -23,9 +23,9 @@ Docker Desk remains a single lightweight Python application:
 
 ## Runtime model
 
-`app.py` owns the Flask routes, host resource readers, Docker SDK calls, and small data-normalization helpers. Jinja renders the initial dashboard. Vanilla JavaScript polls read-only JSON endpoints and updates the DOM without full-page reloads.
+`app.py` owns the Flask routes, host resource readers, Docker SDK calls, and small data-normalization helpers. Jinja renders the initial dashboard without container stats. Vanilla JavaScript updates the DOM from `GET /api/snapshot` only when the Refresh button is clicked; there is no background polling.
 
-The Docker container uses Gunicorn on internal port `8080`. Compose maps the selected host port to that stable internal port. A startup entrypoint briefly runs as root only to discover `/var/run/docker.sock`'s numeric GID, adds it as a supplementary group, drops to the unprivileged `dockerdesk` user, and then execs Gunicorn.
+The Docker container uses Gunicorn on internal port `8080` with one worker. Compose maps the selected host port to that stable internal port, and caps the container at 128MB RAM and 0.25 CPU. Compose `group_add` supplies the host Docker socket GID so the unprivileged `dockerdesk` user can read the socket.
 
 There is no separate frontend application, build system, database, cache, queue, background worker, or Docker management service.
 
@@ -37,11 +37,7 @@ Host RAM and disk information comes from Linux/Python APIs (`/proc/meminfo` and 
 
 ## Resource statistics
 
-For running containers, Docker Desk requests one non-streaming Docker stats sample and calculates CPU percentage from the current and previous cumulative CPU/system-CPU counters. Memory percentage is derived from usage divided by the reported limit after Docker's cache value is removed when available. Network, block I/O, and PIDs are normalized independently so missing fields do not break other containers.
-
-## Idle heuristic
-
-Docker does not define a universal `idle` state. Docker Desk only labels a running container idle after multiple retained samples meet low CPU and low network-activity thresholds. The heuristic is configurable through environment variables and exists only in process memory. It is intentionally not persisted or presented as Docker state.
+The first page load lists containers, Compose projects, and images without calling Docker stats. Refresh uses a single `/api/snapshot` request on one Docker client. For running containers it requests a one-shot stats sample (`one_shot=True`) so the daemon does not wait ~1s per container. CPU percentage is calculated from the current and previous cumulative CPU counters when the sample includes them; otherwise the UI shows `—`. Memory percentage is derived from usage divided by the reported limit after Docker's cache value is removed when available. Network, block I/O, and PIDs are normalized independently so missing fields do not break other containers.
 
 ## Docker socket and security
 

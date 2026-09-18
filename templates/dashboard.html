@@ -10,7 +10,10 @@
 <main class="shell">
 <header class="topbar">
   <div><span class="brand">Docker Desk</span><span class="subtle"> / local engine</span></div>
-  <div id="connection" class="connection {{ 'connected' if connected else 'disconnected' }}">{{ '● connected' if connected else '× Docker unavailable' }}</div>
+  <div class="topbar-actions">
+    <button type="button" id="refresh">Refresh</button>
+    <div id="connection" class="connection {{ 'connected' if connected else 'disconnected' }}">{{ '● connected' if connected else '× Docker unavailable' }}</div>
+  </div>
 </header>
 
 <div id="notice" class="notice" {% if connected %}hidden{% endif %}>{{ error or 'Unable to connect to Docker Engine.' }} Check Docker and socket permissions.</div>
@@ -31,22 +34,29 @@
   <div><b id="image-count">{{ system.images if system else '—' }}</b><span>images</span></div>
 </section>
 
-<section class="section">
-  <div class="toolbar"><div class="section-title">CONTAINERS</div><div class="controls"><input id="search" type="search" placeholder="filter containers" aria-label="Filter containers"><select id="sort" aria-label="Sort containers"><option value="name">name</option><option value="cpu">cpu</option><option value="memory">memory</option><option value="status">status</option></select></div></div>
-  <div class="table containers-table">
-    <div class="row table-head"><span>NAME</span><span>IMAGE</span><span>STATE</span><span>CPU</span><span>MEMORY</span><span>NET I/O</span><span>PORTS</span></div>
-    <div id="containers">
-      {% for c in containers %}<div class="row container-row" data-container-id="{{ c.id }}" data-name="{{ c.name }}" data-project="{{ c.compose_project or '' }}"><span>{{ c.name }}</span><span>{{ c.image }}</span><span class="status {{ c.status }}">{{ '●' if c.status == 'running' else '○' }} {{ c.status }}{% if c.health and c.health != 'healthy' %} · {{ c.health }}{% endif %}{% if c.stats.idle %} · idle{% endif %}</span><span>{{ c.stats.cpu_percent if c.stats.cpu_percent is not none else '—' }}%</span><span>{{ c.stats.memory_usage|filesizeformat if c.stats.memory_usage is not none else '—' }}</span><span>{{ c.stats.network_rx|filesizeformat if c.stats.network_rx is not none else '—' }} / {{ c.stats.network_tx|filesizeformat if c.stats.network_tx is not none else '—' }}</span><span>{{ c.port_mappings|length }} mapping{% if c.port_mappings|length != 1 %}s{% endif %}</span></div>{% else %}<div class="empty">No containers.</div>{% endfor %}
+<section class="containers-block" aria-label="Containers">
+  <section class="section">
+    <div class="toolbar"><div class="section-title">CONTAINERS</div><div class="controls"><input id="search" type="search" placeholder="filter containers" aria-label="Filter containers"><select id="sort" aria-label="Sort containers"><option value="name">name</option><option value="cpu">cpu</option><option value="memory">memory</option><option value="status">status</option></select></div></div>
+    <div class="table containers-table">
+      <div class="row table-head"><span>NAME</span><span>IMAGE</span><span>STATE</span><span>CPU</span><span>MEMORY</span><span>NET I/O</span><span>PORTS</span></div>
+      <div id="containers">
+        {% for c in containers %}<div class="row container-row" data-container-id="{{ c.id }}" data-name="{{ c.name }}" data-project="{{ c.compose_project or '' }}"><span>{{ c.name }}</span><span>{{ c.image }}</span><span class="status {{ c.status }}">{{ '●' if c.status == 'running' else '○' }} {{ c.status }}{% if c.health and c.health != 'healthy' %} · {{ c.health }}{% endif %}</span><span>{{ (c.stats.cpu_percent|string ~ '%') if c.stats.cpu_percent is not none else '—' }}</span><span>{{ c.stats.memory_usage|filesizeformat if c.stats.memory_usage is not none else '—' }}</span><span>{{ c.stats.network_rx|filesizeformat if c.stats.network_rx is not none else '—' }} / {{ c.stats.network_tx|filesizeformat if c.stats.network_tx is not none else '—' }}</span><span class="ports">{{ c.ports_text }}</span></div>{% else %}<div class="empty">No containers.</div>{% endfor %}
+      </div>
     </div>
-  </div>
+  </section>
+  <section class="section detail-section" id="detail-section" hidden><div class="section-title">CONTAINER DETAIL</div><div id="container-detail" class="detail-grid"></div></section>
 </section>
 
-<section class="section"><div class="section-title">PROJECTS</div><div id="projects">{% if projects %}{% for p in projects %}<div class="project"><div class="project-heading"><strong>{{ p.name }}</strong><span>{{ p.running }} / {{ p.total }} running · {{ p.resources.cpu_percent if p.resources.cpu_percent is not none else '—' }}% CPU · {{ p.resources.memory_usage|filesizeformat if p.resources.memory_usage is not none else '—' }}</span></div>{% for c in p.containers %}<div class="row project-row"><span>{{ c.compose_service or c.name }}</span><span>{{ c.image }}</span><span class="status {{ c.status }}">{{ '●' if c.status == 'running' else '○' }} {{ c.status }}</span><span>{{ c.stats.cpu_percent if c.stats.cpu_percent is not none else '—' }}%</span><span>{{ c.stats.memory_usage|filesizeformat if c.stats.memory_usage is not none else '—' }}</span><span>{{ c.port_mappings|length }} port{% if c.port_mappings|length != 1 %}s{% endif %}</span></div>{% endfor %}</div>{% endfor %}{% else %}<div class="empty">No Compose projects detected.</div>{% endif %}</div></section>
+<section class="section"><div class="section-title">PROJECTS</div><div id="projects">{% if projects %}{% for p in projects %}<div class="project"><div class="project-heading"><strong>{{ p.name }}</strong><span>{{ p.running }} / {{ p.total }} running · {{ (p.resources.cpu_percent|string ~ '%') if p.resources.cpu_percent is not none else '—' }} CPU · {{ p.resources.memory_usage|filesizeformat if p.resources.memory_usage is not none else '—' }}</span></div>{% for c in p.containers %}<div class="row project-row"><span>{{ c.compose_service or c.name }}</span><span>{{ c.image }}</span><span class="status {{ c.status }}">{{ '●' if c.status == 'running' else '○' }} {{ c.status }}</span><span>{{ (c.stats.cpu_percent|string ~ '%') if c.stats.cpu_percent is not none else '—' }}</span><span>{{ c.stats.memory_usage|filesizeformat if c.stats.memory_usage is not none else '—' }}</span></div>{% endfor %}</div>{% endfor %}{% else %}<div class="empty">No Compose projects detected.</div>{% endif %}</div></section>
 
-<section class="section detail-section" id="detail-section" hidden><div class="section-title">CONTAINER DETAIL</div><div id="container-detail" class="detail-grid"></div></section>
-<section class="section"><div class="section-title">IMAGES</div><div class="table"><div class="row table-head"><span>IMAGE</span><span>SIZE</span><span>CONTAINERS</span></div><div id="images">{% for i in images %}<div class="row image-row"><span>{{ i.tags[0] if i.tags else i.short_id }}</span><span>{{ i.size|filesizeformat }}</span><span>{{ i.container_count }}</span></div>{% else %}<div class="empty">No images.</div>{% endfor %}</div></div></section>
+<section class="section">
+  <div class="toolbar"><div class="section-title">IMAGES</div><button type="button" id="images-toggle" {% if images|length <= 5 %}hidden{% endif %}>View all ({{ images|length }})</button></div>
+  <div class="table"><div class="row table-head image-row"><span>IMAGE</span><span>SIZE</span><span>AGE</span><span>STATUS</span><span>USED BY</span></div><div id="images">{% for i in images[:5] %}<div class="row image-row"><span>{{ i.tags[0] if i.tags else i.short_id }}</span><span>{{ i.size|filesizeformat }}</span><span>{{ i.age_text }}</span><span class="status {{ 'running' if i.in_use else 'exited' }}">{{ i.use_text }}</span><span>{{ i.used_by_text }}</span></div>{% else %}<div class="empty">No images.</div>{% endfor %}</div></div>
+</section>
 
-<footer><span id="engine-info">{% if system %}Docker {{ system.docker_version }} · {{ system.hostname or 'local engine' }}{% else %}Docker Engine not connected{% endif %}</span><span>read-only · containers 4s · images/system 10s</span></footer>
+<footer><span id="engine-info">{% if system %}Docker {{ system.docker_version }} · {{ system.hostname or 'local engine' }}{% else %}Docker Engine not connected{% endif %}</span><span>read-only · refresh for resource stats</span></footer>
 </main>
+<script type="application/json" id="initial-containers">{{ containers|tojson }}</script>
+<script type="application/json" id="initial-images">{{ images|tojson }}</script>
 <script src="{{ url_for('static', filename='app.js') }}"></script>
 </body></html>
